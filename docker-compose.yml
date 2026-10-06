@@ -47,6 +47,11 @@ services:
       COLDCHAIN_TIMEOUT_SECONDS: "180"
       ELEVATOR_TIMEOUT_SECONDS: "60"
       SCHEDULER_INTERVAL_MS: "5000"
+      # 冷链预警演示参数（℃、℃/分钟）
+      COLDCHAIN_WARN_TEMP: "6"
+      COLDCHAIN_CRITICAL_TEMP: "8"
+      COLDCHAIN_WARM_RATE: "4"
+      COLDCHAIN_COOL_RATE: "2"
     ports:
       - "8080:8080"
     depends_on:

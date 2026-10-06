@@ -1,6 +1,9 @@
 package com.example.robotdelivery.analytics;
 
+import com.example.robotdelivery.coldchain.ColdChainLoss;
+import com.example.robotdelivery.coldchain.ColdChainLossRepository;
 import com.example.robotdelivery.complaint.ComplaintRepository;
+import com.example.robotdelivery.cs.Responsibility;
 import com.example.robotdelivery.event.DeliveryEvent;
 import com.example.robotdelivery.event.DeliveryEventRepository;
 import com.example.robotdelivery.event.EventType;
@@ -25,13 +28,16 @@ public class AnalyticsService {
     private final DeliveryEventRepository eventRepository;
     private final DeliveryOrderRepository orderRepository;
     private final ComplaintRepository complaintRepository;
+    private final ColdChainLossRepository coldChainLossRepository;
 
     public AnalyticsService(DeliveryEventRepository eventRepository,
                             DeliveryOrderRepository orderRepository,
-                            ComplaintRepository complaintRepository) {
+                            ComplaintRepository complaintRepository,
+                            ColdChainLossRepository coldChainLossRepository) {
         this.eventRepository = eventRepository;
         this.orderRepository = orderRepository;
         this.complaintRepository = complaintRepository;
+        this.coldChainLossRepository = coldChainLossRepository;
     }
 
     /**
@@ -63,6 +69,21 @@ public class AnalyticsService {
         long complaints = complaintRepository.countByDelivery_Community_Id(communityId);
         long deliveries = orderRepository.countByCommunityId(communityId);
 
+        long coldChainWarnings = eventRepository.countByCommunityIdAndEventType(
+                communityId, EventType.COLDCHAIN_WARNING.name());
+        long coldChainCritical = eventRepository.countByCommunityIdAndEventType(
+                communityId, EventType.COLDCHAIN_CRITICAL.name());
+        // 冷链超时损失关联门禁等待/电梯等待/机器人路线
+        List<ColdChainLoss> losses = coldChainLossRepository.findByDelivery_Community_Id(communityId);
+        long coldChainLossCount = losses.size();
+        java.math.BigDecimal coldChainLossAmount = losses.stream()
+                .map(ColdChainLoss::getLossAmount)
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+        long lossByAccess = losses.stream()
+                .filter(l -> l.getSuggestedResponsibility() == Responsibility.PROPERTY).count();
+        long lossByElevator = losses.stream()
+                .filter(l -> l.getSuggestedResponsibility() == Responsibility.ELEVATOR_SYSTEM).count();
+
         long impactScore = obstacleCount + constructionDetours * 2 + elevatorFull
                 + nightRestricted * 2 + complaints * 3;
         String impactLevel = impactScore == 0 ? "无影响" : impactScore < 5 ? "低" : impactScore < 15 ? "中" : "高";
@@ -82,6 +103,12 @@ public class AnalyticsService {
         result.put("accessDeniedCount", accessDenied);
         result.put("lowBatteryCount", lowBattery);
         result.put("complaintCount", complaints);
+        result.put("coldChainWarningCount", coldChainWarnings);
+        result.put("coldChainCriticalCount", coldChainCritical);
+        result.put("coldChainLossCount", coldChainLossCount);
+        result.put("coldChainLossAmount", coldChainLossAmount);
+        result.put("coldChainLossByAccessWait", lossByAccess);
+        result.put("coldChainLossByElevatorWait", lossByElevator);
         result.put("impactScore", impactScore);
         result.put("impactLevel", impactLevel);
         result.put("affectsResidents", impactScore >= 5);
@@ -130,6 +157,14 @@ public class AnalyticsService {
             long inProgress = total - signed - returned - cancelled;
             long coldChainTimeouts = list.stream().filter(DeliveryOrder::isColdChainTimedOut).count();
             long pickupTimeouts = list.stream().filter(DeliveryOrder::isPickupTimedOut).count();
+            long coldChainWarned = list.stream()
+                    .filter(o -> o.getColdChainWarnLevel() == com.example.robotdelivery.order.ColdWarnLevel.WARN
+                            || o.getColdChainWarnLevel() == com.example.robotdelivery.order.ColdWarnLevel.CRITICAL)
+                    .count();
+            long coldChainCritical = list.stream()
+                    .filter(o -> o.getColdChainWarnLevel() == com.example.robotdelivery.order.ColdWarnLevel.CRITICAL)
+                    .count();
+            long coldReturnForSwap = list.stream().filter(DeliveryOrder::isColdReturnForSwap).count();
             double avgSeconds = list.stream()
                     .filter(o -> o.getSignedAt() != null)
                     .mapToLong(o -> Duration.between(o.getCreatedAt(), o.getSignedAt()).getSeconds())
@@ -150,6 +185,9 @@ public class AnalyticsService {
             row.put("successRate", total == 0 ? 0 : Math.round(signed * 1000.0 / total) / 10.0);
             row.put("avgDeliverySeconds", Math.round(avgSeconds));
             row.put("coldChainTimeouts", coldChainTimeouts);
+            row.put("coldChainWarned", coldChainWarned);
+            row.put("coldChainCritical", coldChainCritical);
+            row.put("coldReturnForSwap", coldReturnForSwap);
             row.put("pickupTimeouts", pickupTimeouts);
             rows.add(row);
         });

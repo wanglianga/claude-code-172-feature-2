@@ -22,5 +22,7 @@ public interface DeliveryOrderRepository
     List<DeliveryOrder> findByColdChainTrueAndColdChainTimedOutFalseAndStatusNotInAndColdChainDeadlineBefore(
             Collection<DeliveryStatus> excludedStatuses, LocalDateTime deadlineBefore);
 
+    List<DeliveryOrder> findByColdChainTrueAndStatusIn(Collection<DeliveryStatus> statuses);
+
     long countByCommunityId(Long communityId);
 }

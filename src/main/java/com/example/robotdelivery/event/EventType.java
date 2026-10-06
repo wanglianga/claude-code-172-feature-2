@@ -26,6 +26,15 @@ public enum EventType {
     SIGNED,                 // 用户签收
     PICKUP_TIMEOUT,         // 用户超时不取
     COLDCHAIN_TIMEOUT,      // 冷藏订单超时
+    COLDCHAIN_WARNING,      // 冷藏超时风险预警（提前通知客服与用户）
+    COLDCHAIN_CRITICAL,     // 冷藏风险升级为严重（必要时退回换品）
+    TEMP_CALCULATED,        // 持续计算载物仓温度与剩余可配送时长
+    RETURN_FOR_SWAP,        // 冷链风险退回站点更换商品（原配送证据保留）
+    GOODS_SWAPPED,          // 站点已更换商品
+    COLDCHAIN_REDELIVER_OPTION, // 退回站点后生成重新配送选项
+    COLDCHAIN_REFUND_OPTION,    // 退回站点后生成退款选项
+    RESTOCK_NOTIFY,         // 通知门店是否需要重新备货
+    COLDCHAIN_LOSS_ASSESSED,   // 冷链超时损失评估（关联门禁/电梯/路线证据）
     RETURN_STARTED,         // 开始退回
     RETURNED,               // 退回完成
     MANUAL_RELAY,           // 人工接力

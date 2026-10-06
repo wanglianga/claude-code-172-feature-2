@@ -1,6 +1,7 @@
 package com.example.robotdelivery.access;
 
 import com.example.robotdelivery.community.Community;
+import com.example.robotdelivery.coldchain.ColdChainMonitorService;
 import com.example.robotdelivery.config.ApiException;
 import com.example.robotdelivery.cs.CaseType;
 import com.example.robotdelivery.cs.CsService;
@@ -30,15 +31,18 @@ public class AccessService {
     private final DeliveryOrderRepository orderRepository;
     private final DeliveryEventService eventService;
     private final CsService csService;
+    private final ColdChainMonitorService coldChainMonitorService;
 
     public AccessService(AccessRequestRepository accessRepository,
                          DeliveryOrderRepository orderRepository,
                          DeliveryEventService eventService,
-                         CsService csService) {
+                         CsService csService,
+                         ColdChainMonitorService coldChainMonitorService) {
         this.accessRepository = accessRepository;
         this.orderRepository = orderRepository;
         this.eventService = eventService;
         this.csService = csService;
+        this.coldChainMonitorService = coldChainMonitorService;
     }
 
     @Transactional
@@ -62,6 +66,9 @@ public class AccessService {
         Map<String, Object> payload = basePayload(order, request);
         eventService.emit(order.getId(), community.getId(),
                 EventType.ACCESS_REQUESTED, EventActor.ROBOT, payload);
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(), "门禁等待，持续计算载物仓温度");
+        }
 
         // 物业夜间限制运行：夜间时段自动拒绝
         if (community.isNightRestricted() && isNightNow(community)) {
@@ -105,6 +112,9 @@ public class AccessService {
 
         eventService.emit(order.getId(), order.getCommunity().getId(),
                 EventType.ACCESS_GRANTED, EventActor.PROPERTY, basePayload(order, request));
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(), "门禁开通，累计门禁等待已计入温控");
+        }
         return request;
     }
 
@@ -130,6 +140,9 @@ public class AccessService {
                 EventType.ACCESS_DENIED, EventActor.PROPERTY, payload);
         csService.openCase(order.getId(), CaseType.ACCESS_DENIED, Responsibility.PROPERTY,
                 "物业拒绝门禁: " + reason, null);
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(), "门禁被拒，累计门禁等待已计入温控");
+        }
         return request;
     }
 

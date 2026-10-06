@@ -2,6 +2,7 @@ package com.example.robotdelivery.delivery;
 
 import com.example.robotdelivery.community.Building;
 import com.example.robotdelivery.community.BuildingRepository;
+import com.example.robotdelivery.coldchain.ColdChainMonitorService;
 import com.example.robotdelivery.config.ApiException;
 import com.example.robotdelivery.config.DeliveryProperties;
 import com.example.robotdelivery.cs.CaseType;
@@ -53,6 +54,7 @@ public class DeliveryService {
     private final NotificationService notificationService;
     private final CsService csService;
     private final DeliveryProperties properties;
+    private final ColdChainMonitorService coldChainMonitorService;
 
     public DeliveryService(DeliveryOrderRepository orderRepository,
                            RobotRepository robotRepository,
@@ -61,7 +63,8 @@ public class DeliveryService {
                            DeliveryEventService eventService,
                            NotificationService notificationService,
                            CsService csService,
-                           DeliveryProperties properties) {
+                           DeliveryProperties properties,
+                           ColdChainMonitorService coldChainMonitorService) {
         this.orderRepository = orderRepository;
         this.robotRepository = robotRepository;
         this.compartmentRepository = compartmentRepository;
@@ -70,6 +73,7 @@ public class DeliveryService {
         this.notificationService = notificationService;
         this.csService = csService;
         this.properties = properties;
+        this.coldChainMonitorService = coldChainMonitorService;
     }
 
     /** 分配机器人与载物仓（冷藏订单优先冷藏仓） */
@@ -139,6 +143,10 @@ public class DeliveryService {
             adjustPayload.put("location", location);
             eventService.emit(order.getId(), order.getCommunity().getId(),
                     EventType.ROUTE_ADJUSTED, EventActor.ROBOT, "CONSTRUCTION", waitSeconds, adjustPayload);
+        }
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(),
+                    "避障等待(" + obstacleType.name() + ")，持续计算载物仓温度");
         }
         return order;
     }

@@ -8,6 +8,22 @@
 （Kafka topic `delivery-events` → `delivery_event` 表），设备动作与业务结果在同一事件里，
 支撑物业端（通行影响）、运营端（投放效率）、客服端（异常责任）三类视图。
 
+## 冷藏订单超时预警（冷链风控闭环）
+
+配送**药品或生鲜**（`coldChain=true`）时，服务在配送全程**持续计算载物仓温度与剩余可配送时长**：
+门禁 / 电梯 / 避障等待时载物仓按速率升温、机器人移动制冷时回冷，同时支持温度传感器实测上报，
+每次计算都生成温度快照（`cold_chain_snapshot`）并累计**门禁等待 / 电梯等待 / 避障（路线）等待**。
+
+- **超时风险预警**：温度达到预警值或剩余可配送时长不足时，系统**提前通知客服与用户**
+  （短信 + 小程序 + 客服工作台），事件 `COLDCHAIN_WARNING`；
+- **严重风险**：温度达到严重阈值或剩余时长极低时升级 `COLDCHAIN_CRITICAL`，
+  **自动开立客服工单（COLDCHAIN_RISK）**，客服协调放行 / 电梯，**必要时退回站点更换商品**
+  （`return-for-swap` → `confirm-swap-return`），**原配送证据（事件流 / 温度快照 / 门禁与电梯请求）完整保留给赔付判断**；
+- **退回站点后**生成**重新配送 / 退款**两个选项：重新配送会复制收货信息生成新冷链配送单（重新计时，
+  关联原单）并**通知门店重新备货**；退款则**通知门店无需备货**并通知用户退款；
+- **损失归因**：冷藏超时造成的损失登记时自动**关联门禁等待、电梯等待与机器人路线调整**，
+  给出建议责任（物业 / 电梯系统 / 第三方 / 设备方），事件 `COLDCHAIN_LOSS_ASSESSED`，供赔付与结案判断。
+
 ## 技术栈
 
 Java 17 · Spring Boot 3.3 · Spring Data JPA · PostgreSQL 16 · Kafka（KRaft）· Flyway · springdoc-openapi（Swagger UI）
@@ -51,6 +67,13 @@ DB_HOST=localhost DB_PORT=5432 KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
 | `ELEVATOR_TIMEOUT_SECONDS` | 180 | 电梯请求超时 |
 | `LOW_BATTERY_THRESHOLD` | 20 | 低电量阈值（%） |
 | `SCHEDULER_INTERVAL_MS` | 10000 | 超时巡检间隔 |
+| `COLDCHAIN_BASE_TEMP` | 4 | 载物仓标准冷藏温度（℃） |
+| `COLDCHAIN_WARN_TEMP` | 6 | 预警温度（℃），达到后通知客服与用户 |
+| `COLDCHAIN_CRITICAL_TEMP` | 8 | 严重风险温度（℃），达到后必要时退回换品 |
+| `COLDCHAIN_WARM_RATE` | 4 | 门禁/电梯/避障等待时升温速率（℃/分钟） |
+| `COLDCHAIN_COOL_RATE` | 2 | 移动制冷时回冷速率（℃/分钟） |
+| `COLDCHAIN_WARN_RATIO` | 0.30 | 剩余可配送时长低于该比例时预警 |
+| `COLDCHAIN_CRITICAL_RATIO` | 0.12 | 剩余可配送时长低于该比例时升级严重风险 |
 
 ## 测试账号
 
@@ -72,7 +95,7 @@ DB_HOST=localhost DB_PORT=5432 KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
 
 ### 方式一：自动化冒烟脚本（推荐）
 
-应用启动后执行（覆盖主流程 + 全部 10 类异常 + 三端视图，共 62 项断言）：
+应用启动后执行（覆盖主流程 + 全部异常场景（含冷链预警/退回换品/重配退款/损失归因）+ 三端视图）：
 
 ```bash
 ./scripts/smoke.sh            # 默认打 http://localhost:8080
@@ -127,7 +150,11 @@ curl -s localhost:8080/api/deliveries/$OID/events -H "$AUTH" | jq '.[].eventType
 | 机器人电量不足 | 分配时电量 < 阈值被拒(409)；配送中 `POST /api/robots/{id}/status` 低电量 | `LOW_BATTERY` + 客服工单，可 `manual-relay` 人工接力 |
 | 用户超时不取 | 到门后超过 `PICKUP_TIMEOUT_SECONDS` 未签收 | `PICKUP_TIMEOUT` + 自动退回 `RETURNED` |
 | 载物仓打不开 | `POST /api/deliveries/{id}/compartment-fault` | `COMPARTMENT_OPEN_FAILED` + 客服工单 |
-| 冷藏订单超时 | 冷藏单超过 `COLDCHAIN_TIMEOUT_SECONDS` 未完成 | `COLDCHAIN_TIMEOUT` + 客服工单 |
+| 冷藏订单超时 | 冷藏单超过 `COLDCHAIN_TIMEOUT_SECONDS` 未完成 | `COLDCHAIN_TIMEOUT`（含门禁/电梯/路线等待归因）+ 客服工单 + 自动损失证据 |
+| 冷藏超时风险预警 | 配送中 `POST /api/deliveries/{id}/coldchain/temperature`（或等待升温/周期巡检） | `COLDCHAIN_WARNING` 提前通知客服+用户；继续恶化 `COLDCHAIN_CRITICAL` + 客服工单 |
+| 冷链退回换品 | `return-for-swap` → `confirm-swap-return` | `RETURN_FOR_SWAP`+`GOODS_SWAPPED`，证据保留，生成重配/退款选项 |
+| 重新配送/退款 | `POST /api/deliveries/{id}/coldchain/resolutions/{rid}/decide` | 重配=新冷链单+门店备货通知；退款=门店无需备货+用户退款通知 |
+| 冷链损失归因 | `POST /api/deliveries/{id}/coldchain/loss` | `COLDCHAIN_LOSS_ASSESSED`，损失关联门禁/电梯/路线证据与建议责任 |
 | 投诉送错楼栋 | `POST /api/complaints` `complaintType=WRONG_BUILDING` | `COMPLAINT_FILED` + 客服工单；`redeliver` 改派楼栋产生 `ROUTE_ADJUSTED` |
 | 物业限制夜间运行 | `PUT /api/communities/{id}/night-rule` 后夜间申请门禁 | `NIGHT_RESTRICTED` + `ACCESS_DENIED` 自动拒绝 |
 | 电梯请求超时 | 请求后超过 `ELEVATOR_TIMEOUT_SECONDS` 未派梯 | `ELEVATOR_TIMEOUT` + 客服工单 |
@@ -148,13 +175,23 @@ curl -s "localhost:8080/api/cs/cases/summary" -H "$AUTH"
 
 ## 实际验证结论（本仓库交付前已执行）
 
-以下验证均在本环境真实执行通过（本地 PostgreSQL 15 + Kafka 3.7.2 KRaft + 本应用 jar）：
+以下验证均在本环境真实执行通过（本地 PostgreSQL 15 + Kafka 4.1.2 KRaft + 本应用 jar，
+短超时参数 `PICKUP=30s / COLDCHAIN=45s / ELEVATOR=20s / SCHEDULER=5s`）：
 
 1. `mvn package` 构建通过，生成 `target/robot-delivery-1.0.0.jar`。
-2. 干净数据库上应用启动成功：Flyway 执行 `V1__init.sql` + `V2__seed.sql`，JPA 校验通过，Kafka 连接正常。
-3. `./scripts/smoke.sh` 全量运行 **62 项断言全部通过**（含主流程 12 类事件时间线、10 类异常场景、三端视图与鉴权 401/403）。
-4. Swagger UI（`/swagger-ui.html`）可访问，OpenAPI 文档输出 40 个路径。
-5. Kafka topic `delivery-events` 中可消费到全部配送事件（冒烟两轮共 300 条），消费者落库后事件时间线接口可查。
+2. 干净数据库上应用启动成功：Flyway 依次执行 `V1__init.sql`、`V2__seed.sql`、
+   `V3__coldchain_warning.sql`，JPA `ddl-auto=validate` 校验通过，Kafka 连接正常。
+3. `./scripts/smoke.sh` 全量运行 **97 项断言全部通过**：原有主流程与 10 类异常、三端视图、
+   鉴权 401/403 全部保持通过；新增冷链闭环 35 项断言覆盖——温度持续计算与快照、
+   `COLDCHAIN_WARNING/CRITICAL` 提前通知客服+用户、`COLDCHAIN_RISK` 自动工单、
+   退回换品（证据保留）、重新配送（新冷链单+门店备货通知）/退款（门店无需备货+用户通知）、
+   冷链超时损失关联门禁/电梯/路线证据与建议责任。
+4. Swagger UI（`/swagger-ui.html`，302 跳转后 200）可访问，OpenAPI 文档输出 50 个路径，
+   其中冷链温控预警接口 10 个。
+5. Kafka topic `delivery-events` 正常投递与消费落库：冷链 `TEMP_CALCULATED / COLDCHAIN_WARNING /
+   COLDCHAIN_CRITICAL / RETURN_FOR_SWAP / GOODS_SWAPPED / COLDCHAIN_REDELIVER_OPTION /
+   COLDCHAIN_REFUND_OPTION / RESTOCK_NOTIFY / COLDCHAIN_LOSS_ASSESSED / COLDCHAIN_TIMEOUT`
+   事件均可通过统一事件流接口查询。
 
 ## 架构说明
 
@@ -190,6 +227,7 @@ curl -s "localhost:8080/api/cs/cases/summary" -H "$AUTH"
     ├── event/        # 统一配送事件：Kafka 生产者/消费者/事件查询
     ├── order/        # 配送订单（类型/楼栋/冷藏/预计送达/联系方式）
     ├── delivery/     # 主流程编排：分配/避障/到门/签收/退回/人工接力/改派
+    ├── coldchain/    # 冷链温控预警：温度快照/风险预警/退回换品/重配退款/损失归因
     ├── access/       # 物业门禁协同（含夜间限制自动拒绝）
     ├── elevator/     # 电梯系统协同（派梯/满载/超时）
     ├── robot/        # 机器人与载物仓（低电量上报）

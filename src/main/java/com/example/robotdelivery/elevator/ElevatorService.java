@@ -1,5 +1,6 @@
 package com.example.robotdelivery.elevator;
 
+import com.example.robotdelivery.coldchain.ColdChainMonitorService;
 import com.example.robotdelivery.config.ApiException;
 import com.example.robotdelivery.event.DeliveryEventService;
 import com.example.robotdelivery.event.EventActor;
@@ -24,13 +25,16 @@ public class ElevatorService {
     private final ElevatorRequestRepository elevatorRepository;
     private final DeliveryOrderRepository orderRepository;
     private final DeliveryEventService eventService;
+    private final ColdChainMonitorService coldChainMonitorService;
 
     public ElevatorService(ElevatorRequestRepository elevatorRepository,
                            DeliveryOrderRepository orderRepository,
-                           DeliveryEventService eventService) {
+                           DeliveryEventService eventService,
+                           ColdChainMonitorService coldChainMonitorService) {
         this.elevatorRepository = elevatorRepository;
         this.orderRepository = orderRepository;
         this.eventService = eventService;
+        this.coldChainMonitorService = coldChainMonitorService;
     }
 
     @Transactional
@@ -46,6 +50,9 @@ public class ElevatorService {
 
         eventService.emit(order.getId(), order.getCommunity().getId(),
                 EventType.ELEVATOR_REQUESTED, EventActor.ROBOT, payload(order, request));
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(), "电梯等待，持续计算载物仓温度");
+        }
         return request;
     }
 
@@ -93,6 +100,9 @@ public class ElevatorService {
         ElevatorRequest retry = createRequest(order, request.getFromFloor(), request.getToFloor());
         eventService.emit(order.getId(), order.getCommunity().getId(),
                 EventType.ELEVATOR_REQUESTED, EventActor.ROBOT, payload(order, retry));
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(), "电梯满载等待下一趟，持续计算载物仓温度");
+        }
         return retry;
     }
 
@@ -113,6 +123,9 @@ public class ElevatorService {
 
         eventService.emit(order.getId(), order.getCommunity().getId(),
                 EventType.ELEVATOR_COMPLETED, EventActor.ELEVATOR, payload(order, request));
+        if (order.isColdChain()) {
+            coldChainMonitorService.evaluateOrder(order.getId(), "乘梯完成，累计电梯等待已计入温控");
+        }
         return request;
     }
 
