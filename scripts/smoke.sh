@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 冒烟验证：主流程 + 全部异常场景 + 三端视图
+# 冒烟验证：主流程 + 全部异常场景 + 冷藏超时预警全链路（预警/退回/证据/重新配送/退款/门店备货）+ 三端视图
 # 用法: BASE=http://localhost:8080 ./scripts/smoke.sh
 # 依赖: curl, jq
 set -uo pipefail
@@ -180,7 +180,7 @@ req POST "/api/deliveries/$O7/assign" "$OPS" '{"robotId":1}' >/dev/null
 AR7=$(req POST "/api/deliveries/$O7/arrive-gate" "$OPS" '{"gateName":"南门"}' | jq -r .id)
 req POST "/api/access-requests/$AR7/approve" "$PROPERTY" >/dev/null
 req POST "/api/deliveries/$O7/arrive-door" "$OPS" >/dev/null
-if wait_status "$O7" RETURNING 60; then ok "超时未取自动进入退回"; else bad "未进入退回流程"; fi
+if wait_status "$O7" RETURNING 150; then ok "超时未取自动进入退回"; else bad "未进入退回流程"; fi
 wait_event "$O7" PICKUP_TIMEOUT && ok "PICKUP_TIMEOUT 事件" || bad "缺少 PICKUP_TIMEOUT"
 req POST "/api/deliveries/$O7/confirm-return" "$OPS" >/dev/null
 check "退回完成" "$(req GET "/api/orders/$O7" "$OPS" | jq -r .status)" "RETURNED"
@@ -188,7 +188,7 @@ wait_event "$O7" RETURNED && ok "RETURNED 事件" || bad "缺少 RETURNED"
 
 say "8. 异常：冷藏订单超时（等待巡检，COLDCHAIN_TIMEOUT_SECONDS 需较短）"
 O8=$(new_order 1 true MEDICINE)
-if wait_event "$O8" COLDCHAIN_TIMEOUT 90; then ok "COLDCHAIN_TIMEOUT 事件"; else bad "缺少 COLDCHAIN_TIMEOUT"; fi
+if wait_event "$O8" COLDCHAIN_TIMEOUT 200; then ok "COLDCHAIN_TIMEOUT 事件"; else bad "缺少 COLDCHAIN_TIMEOUT"; fi
 check "冷藏超时标记" "$(req GET "/api/orders/$O8" "$OPS" | jq -r .coldChainTimedOut)" "true"
 req POST "/api/deliveries/$O8/cancel" "$OPS" '{"reason":"冷藏超时，订单取消"}' >/dev/null
 
@@ -198,7 +198,7 @@ req POST "/api/deliveries/$O9/assign" "$OPS" '{"robotId":1}' >/dev/null
 AR9=$(req POST "/api/deliveries/$O9/arrive-gate" "$OPS" '{"gateName":"南门"}' | jq -r .id)
 req POST "/api/access-requests/$AR9/approve" "$PROPERTY" >/dev/null
 req POST "/api/deliveries/$O9/request-elevator" "$OPS" '{"fromFloor":1,"toFloor":11}' >/dev/null
-if wait_event "$O9" ELEVATOR_TIMEOUT 60; then ok "ELEVATOR_TIMEOUT 事件"; else bad "缺少 ELEVATOR_TIMEOUT"; fi
+if wait_event "$O9" ELEVATOR_TIMEOUT 130; then ok "ELEVATOR_TIMEOUT 事件"; else bad "缺少 ELEVATOR_TIMEOUT"; fi
 req POST "/api/deliveries/$O9/cancel" "$OPS" '{"reason":"电梯长时间不可用，取消"}' >/dev/null
 
 say "10. 异常：物业夜间限制运行 -> 门禁自动拒绝"
@@ -213,7 +213,84 @@ req POST "/api/deliveries/$O10/cancel" "$OPS" '{"reason":"夜间限制，改期�
 req PUT /api/communities/1/night-rule "$PROPERTY" '{"nightRestricted":true,"nightStart":"22:00","nightEnd":"07:00"}' >/dev/null
 ok "已恢复社区1夜间规则(22:00-07:00 限制)"
 
-say "11. 三端视图"
+say "11. 冷藏超时预警：门禁等待致温升 -> 提前预警客服/用户 -> 严重风险退回站点 -> 证据封存 -> 重新配送(门店备货)"
+O11=$(new_order 1 true MEDICINE)
+req POST "/api/deliveries/$O11/assign" "$OPS" '{"robotId":1}' >/dev/null
+req POST "/api/deliveries/$O11/arrive-gate" "$OPS" '{"gateName":"南门"}' >/dev/null  # 门禁不审批，持续等待
+sleep 2
+WARN1=$(req POST "/api/coldchain/orders/$O11/temperature" "$OPS" '{"temperatureC":8.5}')
+check "上报8.5℃进入预警(WARNING)" "$(echo "$WARN1" | jq -r .riskLevel)" "WARNING"
+check "预警主导原因为门禁等待" "$(echo "$WARN1" | jq -r .riskReason)" "ACCESS_WAIT"
+check "预警归因门禁等待>0秒" "$(echo "$WARN1" | jq '.waits.accessWaitSeconds > 0')" "true"
+wait_event "$O11" COLDCHAIN_WARNING && ok "COLDCHAIN_WARNING 预警事件" || bad "缺少 COLDCHAIN_WARNING"
+req GET "/api/deliveries/$O11/events" "$OPS" | jq -e '.[] | select(.eventType=="COLDCHAIN_WARNING" and .reason=="ACCESS_WAIT")' >/dev/null \
+  && ok "预警事件携带门禁等待原因" || bad "预警事件未关联门禁等待"
+CS_NOTIFY=$(req GET "/api/notifications?deliveryId=$O11" "$OPS" | jq '[.[] | select(.channel=="CS")] | length')
+check "预警已通知客服(CS渠道)" "$([ "$CS_NOTIFY" -ge 1 ] && echo true || echo false)" "true"
+USER_NOTIFY=$(req GET "/api/notifications?deliveryId=$O11" "$OPS" | jq '[.[] | select(.channel=="SMS")] | length')
+check "预警已短信通知用户" "$([ "$USER_NOTIFY" -ge 1 ] && echo true || echo false)" "true"
+CRIT=$(req POST "/api/coldchain/orders/$O11/temperature" "$OPS" '{"temperatureC":11}')
+check "上报11℃进入严重风险(CRITICAL)" "$(echo "$CRIT" | jq -r .riskLevel)" "CRITICAL"
+if wait_status "$O11" RETURNED 30; then ok "严重风险自动退回站点(RETURNED)"; else bad "未自动退回站点"; fi
+check "标记为冷藏风险退回" "$(req GET "/api/coldchain/orders/$O11/status" "$OPS" | jq -r .returnedForRisk)" "true"
+check "原配送证据已封存" "$(req GET "/api/coldchain/orders/$O11/status" "$OPS" | jq -r .evidenceLocked)" "true"
+wait_event "$O11" COLDCHAIN_RISK_RETURN && ok "COLDCHAIN_RISK_RETURN 退回事件" || bad "缺少 COLDCHAIN_RISK_RETURN"
+wait_event "$O11" COLDCHAIN_EVIDENCE_LOCKED && ok "COLDCHAIN_EVIDENCE_LOCKED 证据封存事件" || bad "缺少证据封存事件"
+wait_event "$O11" COLDCHAIN_OPTION_CREATED && ok "COLDCHAIN_OPTION_CREATED 选项事件" || bad "缺少选项生成事件"
+STORE_NOTIFY=$(req GET "/api/notifications?deliveryId=$O11" "$OPS" | jq '[.[] | select(.channel=="STORE")] | length')
+check "退回已通知门店" "$([ "$STORE_NOTIFY" -ge 1 ] && echo true || echo false)" "true"
+RES=$(req GET "/api/coldchain/orders/$O11/resolutions" "$OPS")
+check "生成两个待处理选项" "$(echo "$RES" | jq 'length')" "2"
+check "含重新配送选项" "$(echo "$RES" | jq -r '.[] | select(.option=="REDELIVER") | .status')" "PENDING"
+check "含退款选项" "$(echo "$RES" | jq -r '.[] | select(.option=="REFUND") | .status')" "PENDING"
+check "重新配送需门店备货" "$(echo "$RES" | jq -r '.[] | select(.option=="REDELIVER") | .restockRequired')" "true"
+EV11=$(req GET "/api/coldchain/orders/$O11/evidence" "$OPS")
+check "赔付证据-门禁等待归因>0" "$(echo "$EV11" | jq '.waitAttribution.accessWaitSeconds > 0')" "true"
+check "赔付证据-温度曲线非空" "$(echo "$EV11" | jq '.temperatureCurve | length > 0')" "true"
+check "赔付证据-时间线含退回" "$(echo "$EV11" | jq '[.eventTimeline[].eventType] | index("COLDCHAIN_RISK_RETURN") != null')" "true"
+check "赔付证据-时间线含门禁申请" "$(echo "$EV11" | jq '[.eventTimeline[].eventType] | index("ACCESS_REQUESTED") != null')" "true"
+REDELIVER=$(req POST "/api/coldchain/orders/$O11/resolve" "$CS" '{"option":"REDELIVER","note":"用户同意重新配送"}')
+check "选择重新配送后选项状态" "$(echo "$REDELIVER" | jq -r .status)" "REDELIVERING"
+NEW_NO=$(echo "$REDELIVER" | jq -r .newOrderNo)
+[ -n "$NEW_NO" ] && [ "$NEW_NO" != "null" ] && ok "已生成重新配送新单 $NEW_NO" || bad "未生成新配送单"
+check "新单为冷藏单" "$(req GET "/api/orders" "$OPS" | jq -r ".[] | select(.orderNo==\"$NEW_NO\") | .coldChain")" "true"
+wait_event "$O11" COLDCHAIN_REDELIVERY_CREATED && ok "COLDCHAIN_REDELIVERY_CREATED 事件" || bad "缺少重新配送新单事件"
+wait_event "$O11" COLDCHAIN_STOCK_REPREP && ok "COLDCHAIN_STOCK_REPREP 门店备货事件" || bad "缺少门店备货事件"
+check "另一选项(退款)已作废" "$(req GET "/api/coldchain/orders/$O11/resolutions" "$OPS" | jq -r '.[] | select(.option=="REFUND") | .status')" "CANCELLED"
+
+say "12. 冷藏超时预警：电梯等待 -> 人工退回 -> 选择退款 -> 通知用户"
+O12=$(new_order 1 true GROCERY)
+req POST "/api/deliveries/$O12/assign" "$OPS" '{"robotId":1}' >/dev/null
+AR12=$(req POST "/api/deliveries/$O12/arrive-gate" "$OPS" '{"gateName":"南门"}' | jq -r .id)
+req POST "/api/access-requests/$AR12/approve" "$PROPERTY" >/dev/null
+req POST "/api/deliveries/$O12/request-elevator" "$OPS" '{"fromFloor":1,"toFloor":8}' >/dev/null  # 电梯不派梯
+sleep 2
+req POST "/api/coldchain/orders/$O12/risk-return" "$CS" '{"reason":"电梯持续等待，商品可能失温"}' >/dev/null
+if wait_status "$O12" RETURNED 20; then ok "人工退回后状态RETURNED"; else bad "人工退回失败"; fi
+wait_event "$O12" COLDCHAIN_EVIDENCE_LOCKED && ok "O12证据封存" || bad "O12缺少证据封存"
+EV12=$(req GET "/api/coldchain/orders/$O12/evidence" "$OPS")
+check "赔付证据-电梯等待归因>0" "$(echo "$EV12" | jq '.waitAttribution.elevatorWaitSeconds > 0')" "true"
+REFUND=$(req POST "/api/coldchain/orders/$O12/resolve" "$CS" '{"option":"REFUND","note":"全额退款"}')
+check "选择退款后选项状态" "$(echo "$REFUND" | jq -r .status)" "REFUNDED"
+wait_event "$O12" COLDCHAIN_REFUNDED && ok "COLDCHAIN_REFUNDED 退款事件" || bad "缺少退款事件"
+req GET "/api/notifications?deliveryId=$O12" "$OPS" | jq -e '[.[] | select(.channel=="SMS" and (.content|test("退款")))] | length > 0' >/dev/null \
+  && ok "退款已短信通知用户" || bad "退款未通知用户"
+
+say "13. 冷藏超时预警：在途风险预警列表与损失归因"
+O13=$(new_order 1 true MEDICINE)
+req POST "/api/deliveries/$O13/assign" "$OPS" '{"robotId":1}' >/dev/null
+req POST "/api/coldchain/orders/$O13/temperature" "$OPS" '{"temperatureC":8.5}' >/dev/null
+ALERTS=$(req GET "/api/coldchain/alerts" "$CS")
+echo "$ALERTS" | jq -e ".[] | select(.orderId==$O13 and .riskLevel==\"WARNING\")" >/dev/null \
+  && ok "预警列表含在途WARNING订单" || bad "预警列表缺少在途WARNING订单"
+LOSSES=$(req GET "/api/coldchain/losses?communityId=1" "$CS")
+echo "$LOSSES" | jq -e ".[] | select(.orderId==$O11 and .returnedForRisk==true)" >/dev/null \
+  && ok "损失列表关联O11门禁等待" || bad "损失列表缺少O11"
+echo "$LOSSES" | jq -e ".[] | select(.orderId==$O12 and .waitAttribution.elevatorWaitSeconds > 0)" >/dev/null \
+  && ok "损失列表关联O12电梯等待与机器人路线" || bad "损失列表缺少O12电梯归因"
+echo "  冷藏损失数: $(echo "$LOSSES" | jq 'length') 笔"
+
+say "14. 三端视图"
 IMPACT=$(req GET "/api/analytics/property/passage-impact?communityId=1" "$PROPERTY")
 check "物业端-避障停留次数>=2" "$(echo "$IMPACT" | jq '.obstacleStopCount >= 2')" "true"
 check "物业端-施工绕行>=1" "$(echo "$IMPACT" | jq '.constructionDetours >= 1')" "true"

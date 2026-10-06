@@ -1,6 +1,8 @@
 package com.example.robotdelivery.scheduler;
 
 import com.example.robotdelivery.config.DeliveryProperties;
+import com.example.robotdelivery.coldchain.ColdChainMonitorService;
+import com.example.robotdelivery.coldchain.WaitAttribution;
 import com.example.robotdelivery.cs.CaseType;
 import com.example.robotdelivery.cs.CsService;
 import com.example.robotdelivery.cs.Responsibility;
@@ -36,17 +38,20 @@ public class TimeoutScheduler {
     private final DeliveryEventService eventService;
     private final CsService csService;
     private final DeliveryProperties properties;
+    private final ColdChainMonitorService coldChainMonitorService;
 
     public TimeoutScheduler(DeliveryOrderRepository orderRepository,
                             ElevatorRequestRepository elevatorRepository,
                             DeliveryEventService eventService,
                             CsService csService,
-                            DeliveryProperties properties) {
+                            DeliveryProperties properties,
+                            ColdChainMonitorService coldChainMonitorService) {
         this.orderRepository = orderRepository;
         this.elevatorRepository = elevatorRepository;
         this.eventService = eventService;
         this.csService = csService;
         this.properties = properties;
+        this.coldChainMonitorService = coldChainMonitorService;
     }
 
     @Scheduled(fixedDelayString = "${delivery.scheduler-interval-ms:10000}",
@@ -99,15 +104,31 @@ public class TimeoutScheduler {
             order.setColdChainTimedOut(true);
             orderRepository.save(order);
 
+            // 损失关联门禁等待、电梯等待和机器人路线（避障/绕行），供赔付判责
+            WaitAttribution attr = coldChainMonitorService.attributeWaits(order, LocalDateTime.now());
             Map<String, Object> payload = new HashMap<>();
             payload.put("orderNo", order.getOrderNo());
             payload.put("coldChainDeadline", order.getColdChainDeadline().toString());
             payload.put("orderType", order.getOrderType().name());
+            Map<String, Object> waits = new HashMap<>();
+            waits.put("accessWaitSeconds", attr.accessWaitSeconds());
+            waits.put("elevatorWaitSeconds", attr.elevatorWaitSeconds());
+            waits.put("obstacleWaitSeconds", attr.obstacleWaitSeconds());
+            waits.put("routeWaitSeconds", attr.routeWaitSeconds());
+            waits.put("totalWaitSeconds", attr.totalWaitSeconds());
+            waits.put("dominantReason", attr.dominantReason());
+            payload.put("waitAttribution", waits);
             eventService.emit(order.getId(), order.getCommunity().getId(),
-                    EventType.COLDCHAIN_TIMEOUT, EventActor.SYSTEM, payload);
+                    EventType.COLDCHAIN_TIMEOUT, EventActor.SYSTEM, attr.dominantReason(),
+                    attr.totalWaitSeconds(), payload);
             csService.openCase(order.getId(), CaseType.COLDCHAIN_TIMEOUT, Responsibility.PLATFORM,
-                    "冷藏订单超过履约时限(" + properties.getColdchainTimeoutSeconds() + "秒)未完成", null);
-            log.info("冷藏订单超时: orderNo={}", order.getOrderNo());
+                    String.format(
+                            "冷藏订单超过履约时限(%d秒)未完成；损失关联等待 门禁=%ds 电梯=%ds 避障=%ds 路线=%ds（主导:%s）",
+                            properties.getColdchainTimeoutSeconds(),
+                            attr.accessWaitSeconds(), attr.elevatorWaitSeconds(),
+                            attr.obstacleWaitSeconds(), attr.routeWaitSeconds(), attr.dominantReason()),
+                    null);
+            log.info("冷藏订单超时: orderNo={} 主导原因={}", order.getOrderNo(), attr.dominantReason());
         }
     }
 

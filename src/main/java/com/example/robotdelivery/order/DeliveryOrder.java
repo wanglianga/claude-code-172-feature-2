@@ -7,6 +7,7 @@ import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Getter
@@ -95,6 +96,26 @@ public class DeliveryOrder {
 
     @Column(name = "pickup_timed_out", nullable = false)
     private boolean pickupTimedOut;
+
+    /** 首次冷藏超时风险预警（WARNING）时间 */
+    @Column(name = "cold_chain_warned_at")
+    private LocalDateTime coldChainWarnedAt;
+
+    /** 严重风险（CRITICAL）时间，作为自动退回站点的判定点 */
+    @Column(name = "cold_chain_critical_at")
+    private LocalDateTime coldChainCriticalAt;
+
+    /** 最新载物仓温度（℃，持续计算/设备上报） */
+    @Column(name = "cold_chain_last_temp", precision = 5, scale = 2)
+    private BigDecimal coldChainLastTemp;
+
+    /** 是否因冷藏超时风险退回站点（区别于用户超时未取的退回） */
+    @Column(name = "cold_chain_returned_risk", nullable = false)
+    private boolean coldChainReturnedRisk;
+
+    /** 原配送证据是否已封存（供赔付判断） */
+    @Column(name = "cold_chain_evidence_locked", nullable = false)
+    private boolean coldChainEvidenceLocked;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;

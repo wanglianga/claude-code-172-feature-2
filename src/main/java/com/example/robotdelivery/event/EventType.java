@@ -26,6 +26,14 @@ public enum EventType {
     SIGNED,                 // 用户签收
     PICKUP_TIMEOUT,         // 用户超时不取
     COLDCHAIN_TIMEOUT,      // 冷藏订单超时
+    COLDCHAIN_TEMP_REPORT,  // 载物仓温度/剩余可配送时长采样上报
+    COLDCHAIN_WARNING,      // 冷藏超时风险预警（提前通知客服与用户，携带门禁/电梯/路线等待归因）
+    COLDCHAIN_RISK_RETURN,  // 冷藏超时风险，商品退回站点更换
+    COLDCHAIN_EVIDENCE_LOCKED, // 原配送证据封存（供赔付判断）
+    COLDCHAIN_OPTION_CREATED,  // 退回站点后生成重新配送/退款选项
+    COLDCHAIN_STOCK_REPREP,    // 通知门店重新备货
+    COLDCHAIN_REDELIVERY_CREATED, // 已生成重新配送新单
+    COLDCHAIN_REFUNDED,     // 冷藏订单已退款
     RETURN_STARTED,         // 开始退回
     RETURNED,               // 退回完成
     MANUAL_RELAY,           // 人工接力

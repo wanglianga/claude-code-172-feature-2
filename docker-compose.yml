@@ -47,6 +47,9 @@ services:
       COLDCHAIN_TIMEOUT_SECONDS: "180"
       ELEVATOR_TIMEOUT_SECONDS: "60"
       SCHEDULER_INTERVAL_MS: "5000"
+      # 冷藏预警演示参数：剩余45秒预警、30秒严重风险并自动退回站点
+      COLDCHAIN_WARN_LEAD_SECONDS: "45"
+      COLDCHAIN_CRITICAL_LEAD_SECONDS: "30"
     ports:
       - "8080:8080"
     depends_on:

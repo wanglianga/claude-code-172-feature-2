@@ -36,6 +36,14 @@ delivery:
   low-battery-threshold: ${LOW_BATTERY_THRESHOLD:20}          # 低电量阈值（%）
   scheduler-interval-ms: ${SCHEDULER_INTERVAL_MS:10000}       # 超时巡检间隔
   scheduler-enabled: ${SCHEDULER_ENABLED:true}
+  # 冷藏超时预警：温度与剩余可配送时长持续计算，门禁/电梯等待导致风险时提前通知客服与用户
+  coldchain-warn-lead-seconds: ${COLDCHAIN_WARN_LEAD_SECONDS:600}     # 剩余时长不足该值预警（默认10分钟）
+  coldchain-critical-lead-seconds: ${COLDCHAIN_CRITICAL_LEAD_SECONDS:300} # 剩余时长不足该值判严重风险（默认5分钟）
+  coldchain-temp-safe-c: ${COLDCHAIN_TEMP_SAFE_C:2}                   # 载物仓安全温度℃
+  coldchain-temp-warn-c: ${COLDCHAIN_TEMP_WARN_C:8}                   # 预警温度℃
+  coldchain-temp-critical-c: ${COLDCHAIN_TEMP_CRITICAL_C:10}          # 临界温度℃
+  coldchain-temp-rise-per-wait-minute: ${COLDCHAIN_TEMP_RISE_PER_WAIT_MINUTE:0.5} # 每等待1分钟附加温升
+  coldchain-auto-return-enabled: ${COLDCHAIN_AUTO_RETURN_ENABLED:true} # 严重风险自动退回站点
 
 springdoc:
   swagger-ui:

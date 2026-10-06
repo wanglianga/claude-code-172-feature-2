@@ -22,5 +22,8 @@ public interface DeliveryOrderRepository
     List<DeliveryOrder> findByColdChainTrueAndColdChainTimedOutFalseAndStatusNotInAndColdChainDeadlineBefore(
             Collection<DeliveryStatus> excludedStatuses, LocalDateTime deadlineBefore);
 
+    /** 冷藏在途单（用于持续温度/剩余时长计算与超时风险预警） */
+    List<DeliveryOrder> findByColdChainTrueAndStatusIn(Collection<DeliveryStatus> statuses);
+
     long countByCommunityId(Long communityId);
 }

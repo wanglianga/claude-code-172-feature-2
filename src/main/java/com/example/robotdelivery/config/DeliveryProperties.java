@@ -28,4 +28,25 @@ public class DeliveryProperties {
 
     /** 是否开启超时巡检 */
     private boolean schedulerEnabled = true;
+
+    /** 冷藏超时风险提前预警秒数：剩余可配送时长不足该值即发出 WARNING */
+    private long coldchainWarnLeadSeconds = 600;
+
+    /** 冷藏严重风险提前量秒数：剩余时长不足该值（或温度达到临界）判定 CRITICAL，必要时退回站点 */
+    private long coldchainCriticalLeadSeconds = 300;
+
+    /** 载物仓安全温度（℃，出库基准温度） */
+    private double coldchainTempSafeC = 2.0;
+
+    /** 载物仓预警温度（℃） */
+    private double coldchainTempWarnC = 8.0;
+
+    /** 载物仓临界温度（℃），达到即判定商品可能失温 */
+    private double coldchainTempCriticalC = 10.0;
+
+    /** 每累计等待 1 分钟的附加温升（℃），门禁/电梯/避障等待会推高仓温 */
+    private double coldchainTempRisePerWaitMinute = 0.5;
+
+    /** CRITICAL 风险时是否自动退回站点更换商品 */
+    private boolean coldchainAutoReturnEnabled = true;
 }
